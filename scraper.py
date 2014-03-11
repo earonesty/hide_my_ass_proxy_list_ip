@@ -110,7 +110,7 @@ class HideMyAssSpider(CrawlSpider):
             loader.add_value('ipaddress', ipaddress)
             loader.add_xpath('port', 'td[3]/text()')
             loader.add_xpath('country', 'td[4]/span/text()')
-            loader.add_xpath('_type', 'td[7]/text()')
+            loader.add_xpath('proxy_type', 'td[7]/text()')
             loader.add_xpath('anonimity', 'td[8]/text()')
             loader.add_value('url', response.url)
 
@@ -126,7 +126,7 @@ class Website(Item):
     country = Field()
     speed = Field()
     connection_time = Field()
-    _type = Field()
+    proxy_type = Field()
     anonimity = Field()
     
 
