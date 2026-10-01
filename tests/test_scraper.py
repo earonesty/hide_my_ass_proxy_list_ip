@@ -52,6 +52,15 @@ class ParsingTests(unittest.TestCase):
                                          'proxy_type': 'HTTP', 'anonimity': 'High',
                                          'url': 'http://hidemyass.com/proxy-list/'})
 
+    def test_nested_visible_and_hidden_ip_text(self):
+        markup = row('<style>.hide { display: none; }</style>'
+                     '<span><b>1</b>.<i class="extra hide"><b>99.</b></i>2.'
+                     '<em style="display: none"><b>88.</b></em>'
+                     '<span><b>3.</b></span>4<!-- 77 --></span>'
+                     '<div class="hide"><span>66.</span></div>')
+        item = list(HideMyAssSpider().parse_proxy_page(response(markup)))[0]
+        self.assertEqual(item['ipaddress'], '1.2.3.4')
+
     def test_ip_without_style_block(self):
         item = list(HideMyAssSpider().parse_start_url(response(row('1.2.3.4'))))[0]
         self.assertEqual(item['ipaddress'], '1.2.3.4')

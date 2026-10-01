@@ -28,6 +28,19 @@ CSS_RULE = re.compile(r'([^{}]+)\{([^{}]*)\}')
 CSS_CLASS = re.compile(r'\.([A-Za-z_][\w-]*)')
 
 
+def visible_text(part, hidden_classes):
+    """Collect descendant text while omitting hidden elements and their children."""
+    if isinstance(part.root, str):
+        return part.get()
+    if not isinstance(part.root.tag, str) or part.root.tag.lower() in {'style', 'script'}:
+        return ''
+    if HIDDEN_STYLE.search(part.attrib.get('style', '')):
+        return ''
+    if hidden_classes.intersection(part.attrib.get('class', '').split()):
+        return ''
+    return ''.join(visible_text(child, hidden_classes) for child in part.xpath('node()'))
+
+
 class HideMyAssSpider(CrawlSpider):
     name = 'hidemyass'
     start_urls = ['http://hidemyass.com/proxy-list/']
@@ -59,14 +72,7 @@ class HideMyAssSpider(CrawlSpider):
 
             ipaddress = []
             for part in ipaddress_parts.xpath('span|div|text()'):
-                if isinstance(part.root, str):
-                    text = part.get()
-                else:
-                    if HIDDEN_STYLE.search(part.attrib.get('style', '')):
-                        continue
-                    if hidden_classes.intersection(part.attrib.get('class', '').split()):
-                        continue
-                    text = ''.join(part.xpath('text()').getall())
+                text = visible_text(part, hidden_classes)
                 for octet in text.split('.'):
                     octet = octet.strip()
                     if octet.isdigit():
