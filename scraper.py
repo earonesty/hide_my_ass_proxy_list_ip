@@ -1,108 +1,82 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
-import scraperwiki
-import urllib2
-import lxml, lxml.html as html
 import re
-import socket
 
-from scrapy.contrib.spiders import CrawlSpider, Rule
-from scrapy.contrib.linkextractors.sgml import SgmlLinkExtractor
-
-from scrapy.selector import HtmlXPathSelector
-
-from scrapy.item import Item, Field
-from scrapy.http import Request
-from scrapy.contrib.loader import XPathItemLoader
-from scrapy.contrib.loader.processor import MapCompose, TakeFirst
-
-USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/534.56.5 (KHTML, like Gecko) Version/5.1.6 Safari/534.56.5'
-DEPTH_LIMIT = '1'
-from scrapy import log
-
-from scrapy.xlib.pydispatch import dispatcher
 from scrapy import signals
-        
+from scrapy.crawler import CrawlerProcess
+from scrapy.spiders import CrawlSpider, Rule
+from scrapy.linkextractors import LinkExtractor
+from scrapy.item import Item, Field
+from scrapy.loader import ItemLoader
+from itemloaders.processors import MapCompose, TakeFirst
+
+
+def class_xpath(name):
+    """Match a complete HTML class token, regardless of order or whitespace."""
+    return "contains(concat(' ', normalize-space(@class), ' '), ' %s ')" % name
+
+
+NEXT_PAGE_XPATHS = (
+    '//a[%s]' % class_xpath('next'),
+    '//div[@id="pagination"]//li[%s]/a' % class_xpath('nextpageactive'),
+)
+
+# Old pages use compact declarations; newer pages may add spaces or !important.
+HIDDEN_STYLE = re.compile(r'(?:^|;)\s*display\s*:\s*none\s*(?:!important\s*)?(?:;|$)', re.I)
+CSS_RULE = re.compile(r'([^{}]+)\{([^{}]*)\}')
+CSS_CLASS = re.compile(r'\.([A-Za-z_][\w-]*)')
+
+
+def visible_text(part, hidden_classes):
+    """Collect descendant text while omitting hidden elements and their children."""
+    if isinstance(part.root, str):
+        return part.get()
+    if not isinstance(part.root.tag, str) or part.root.tag.lower() in {'style', 'script'}:
+        return ''
+    if HIDDEN_STYLE.search(part.attrib.get('style', '')):
+        return ''
+    if hidden_classes.intersection(part.attrib.get('class', '').split()):
+        return ''
+    return ''.join(visible_text(child, hidden_classes) for child in part.xpath('node()'))
+
+
 class HideMyAssSpider(CrawlSpider):
     name = 'hidemyass'
-    start_urls = [
-    'http://hidemyass.com/proxy-list/'
-    ]
+    start_urls = ['http://hidemyass.com/proxy-list/']
     allowed_domains = ['hidemyass.com']
-    
+
     rules = (
-        Rule(SgmlLinkExtractor(
-                restrict_xpaths=(
-                    '//div[@id="container"]//div[@id="pagination"]/ul/div/li[@class="nextpageactive"]/a')
-                ),
-            callback='parse', follow=True),
+        Rule(LinkExtractor(restrict_xpaths=NEXT_PAGE_XPATHS),
+             callback='parse_proxy_page', follow=True),
     )
 
-    def parse(self, response):
-        self.log('No item received for %s' % response.url)
+    def parse_start_url(self, response, **kwargs):
+        yield from self.parse_proxy_page(response)
 
-        for elem in super(HideMyAssSpider, self).parse(response):
-            yield elem       
-
-        hxs = HtmlXPathSelector(response)
-        links = hxs.select('//tr[@class="altshade"]')
+    def parse_proxy_page(self, response):
+        links = response.xpath('//tr[%s]' % class_xpath('altshade'))
 
         for link in links:
-            ipaddress_parts = link.select('td[2]/span')
-
-            style_text = ipaddress_parts.select('style/text()').extract()
-            style_text = style_text[0].split('\n')
-            display_none = [style[1:style.index('{')]
-                            for style in style_text
-                            if 'none' in style]
-            display_inline = [style[1:style.index('{')]
-                            for style in style_text
-                            if 'inline' in style]
-            display_none = set(display_none)
-            display_inline = set(display_inline)
+            ipaddress_parts = link.xpath('td[2]/span')
+            hidden_classes = set()
+            for style in ipaddress_parts.xpath('style/text()').getall():
+                for selectors, declarations in CSS_RULE.findall(style):
+                    if HIDDEN_STYLE.search(declarations):
+                        # Restrict this to class-only selectors used by the IP
+                        # obfuscation, rather than interpreting arbitrary CSS.
+                        for selector in selectors.split(','):
+                            selector = selector.strip()
+                            if re.fullmatch(r'\.[A-Za-z_][\w-]*', selector):
+                                hidden_classes.update(CSS_CLASS.findall(selector))
 
             ipaddress = []
-
-            for ipaddress_part in ipaddress_parts.select('span|div|text()'):
-                tag_class = tag_style = tag_name = None
-                try:
-                    tag_class = ipaddress_part.select('@class').extract()
-                except TypeError:
-                    # Workaround bug in lxml.etree: Argument 'element' has incorrect type (expected lxml.etree._Element, got _ElementStringResult)
-                    pass
-
-                try:
-                    tag_style = ipaddress_part.select('@style').extract()
-                except TypeError:
-                    # Workaround bug in lxml.etree: Argument 'element' has incorrect type (expected lxml.etree._Element, got _ElementStringResult)
-                    pass
-
-                try:                
-                    tag_name = ipaddress_part.select("name()")
-                except TypeError:
-                    # Workaround bug in lxml.etree: Argument 'element' has incorrect type (expected lxml.etree._Element, got _ElementStringResult) 
-                    pass
-
-                if tag_name:
-                    tag_text = ipaddress_part.select('text()').extract()
-                else:
-                    tag_text = ipaddress_part.extract()
-
-                if tag_style and 'none' in tag_style[0]:
-                    continue
-                if tag_class and tag_class[0] in display_none:
-                    continue
-
-                if isinstance(tag_text, list):
-                    tag_text = ''.join(tag_text)
-
-                tag_texts = tag_text.split('.')
-                for tag_text in tag_texts:
-                    tag_text = tag_text.strip()
-                    if not tag_text.isdigit():
-                        continue
-                    ipaddress.append(tag_text)
+            for part in ipaddress_parts.xpath('span|div|text()'):
+                text = visible_text(part, hidden_classes)
+                for octet in text.split('.'):
+                    octet = octet.strip()
+                    if octet.isdigit():
+                        ipaddress.append(octet)
 
             ipaddress = '.'.join(ipaddress)
 
@@ -115,10 +89,10 @@ class HideMyAssSpider(CrawlSpider):
             loader.add_value('url', response.url)
 
             item = loader.load_item()
-            
+
             yield item
 
-                        
+
 class Website(Item):
     url = Field()
     ipaddress = Field()
@@ -128,9 +102,9 @@ class Website(Item):
     connection_time = Field()
     proxy_type = Field()
     anonimity = Field()
-    
 
-class WebsiteLoader(XPathItemLoader):
+
+class WebsiteLoader(ItemLoader):
     default_item_class = Website
     default_input_processor = MapCompose(lambda x: x.strip())
     default_output_processor = TakeFirst()
@@ -141,8 +115,13 @@ class SWPipeline(object):
     def __init__(self):
         self.buffer = 20
         self.data = []
-        self.counter = 0
-        dispatcher.connect(self.spider_closed, signals.spider_closed)
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        pipeline = cls()
+        pipeline.buffer = crawler.settings.getint('SW_SAVE_BUFFER', 20)
+        crawler.signals.connect(pipeline.spider_closed, signals.spider_closed)
+        return pipeline
 
     def process_item(self, item, spider):
         self.data.append(dict(item))
@@ -153,63 +132,38 @@ class SWPipeline(object):
     def spider_closed(self, spider):
         if self.data:
             self.write_data(spider)
-    
+
     def write_data(self, spider):
-        #unique_keys = spider.settings.get('SW_UNIQUE_KEYS', ['ipaddress'])
         unique_keys = ['ipaddress']
+        import scraperwiki
         scraperwiki.sqlite.save(table_name=spider.name, unique_keys=unique_keys, data=self.data)
         self.data = []
 
+
 def run_spider(spider, settings):
     """Run a spider with given settings"""
-    from scrapy import signals
-    from scrapy.xlib.pydispatch import dispatcher
-    from scrapy.settings import CrawlerSettings
-      
-    def catch_item(sender, item, **kwargs):
-        #log.msg("Got:" + str(item))
-        pass
-       
-    dispatcher.connect(catch_item, signal=signals.item_passed)
-
-    from scrapy.crawler import CrawlerProcess
-
-    settings = CrawlerSettings(values=settings)
-
     crawler = CrawlerProcess(settings)
-    crawler.install()
-    crawler.configure()
     crawler.crawl(spider)
-
-    #log.start(loglevel='DEBUG')
-
     crawler.start()
+
 
 def main():
     options = {
         'LOG_LEVEL': 'DEBUG',
-        'FEED_URI': 'proxylist.json',
-        'FEED_FORMAT': 'jsonlines',
+        'FEEDS': {'proxylist.json': {'format': 'jsonlines', 'overwrite': True}},
     }
 
-    run_spider(HideMyAssSpider(), options)
+    run_spider(HideMyAssSpider, options)
+
 
 def scraper():
-    import sys
-    sys.path.append("/home/scriptrunner/")
-    print sys.path
     options = {
         'SW_SAVE_BUFFER': 30,
-        'SW_UNIQUE_KEYS': ['url'],
-        'ITEM_PIPELINES': ['script.SWPipeline'],
+        'ITEM_PIPELINES': {SWPipeline: 300},
     }
 
-       
-    run_spider(HideMyAssSpider(), options)
+    run_spider(HideMyAssSpider, options)
 
 
 if __name__ == '__main__':
     main()
-
-if __name__ == 'scraper':
-    scraper()

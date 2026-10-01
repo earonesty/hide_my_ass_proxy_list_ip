@@ -1,0 +1,4 @@
+scraperwiki>=1.0,<2
+scrapy>=2.13,<3
+# Scrapy 2.13 imports a private SSL API removed in Twisted 26.
+Twisted>=25.5,<26

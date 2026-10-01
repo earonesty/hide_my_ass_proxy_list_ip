@@ -1,2 +1,5 @@
 # Ignore output of scraper
 data.sqlite
+proxylist.json
+.venv/
+__pycache__/

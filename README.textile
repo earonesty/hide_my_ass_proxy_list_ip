@@ -1,1 +1,28 @@
-Parse Hide My Ass Proxy list with parsing IP addres.
+h1. Hide My Ass proxy list scraper
+
+Extracts visible IP addresses and proxy metadata from the historical Hide My Ass proxy-list HTML. Supports both the legacy @nextpageactive@ pagination and newer @next@ links, including additional class names and whitespace.
+
+h2. Setup and run
+
+Use Python 3 (tested on Python 3.12 and 3.14):
+
+<pre>
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python scraper.py
+</pre>
+
+The command writes JSON Lines to @proxylist.json@, replacing previous output. To use the ScraperWiki SQLite pipeline explicitly, call @scraper.scraper()@; importing the module does not start a crawl. SQLite records are keyed by IP address as before.
+
+h2. Validation
+
+<pre>
+python -m unittest discover -s tests -v
+</pre>
+
+The seven regression tests cover old/new pagination, complete class-token matching, compact/spaced IP-hiding CSS, nested visible/hidden elements, pages without style blocks, SQLite buffering and close flushing, and a three-page localhost crawl producing JSON Lines. No live proxy service is needed for the tests.
+
+Validated with Scrapy 2.13.0 / Python 3.12.3 and Scrapy 2.19.0 / Python 3.14.3, both using Twisted 25.5.0 and ScraperWiki 1.0.0. Twisted is constrained below 26 because Scrapy 2.13 uses a private SSL API removed in Twisted 26. Python 2 and the old Scrapy APIs are no longer supported.
+
+The original @http://hidemyass.com/proxy-list/@ endpoint remains configured. Fixture validation establishes scraper behavior for these historical layouts; it does not establish that the live service still publishes them.
